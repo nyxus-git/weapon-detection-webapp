@@ -1,2 +1,2 @@
-/models
-/uploads
+echo "model/" >> .gitignore
+echo "uploads/" >> .gitignore
