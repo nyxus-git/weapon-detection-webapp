@@ -1,3 +1,5 @@
+import sys
+sys.path.append("./yolov5")
 from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import torch
@@ -5,19 +7,22 @@ import cv2
 import numpy as np
 import shutil
 import os
-from ultralytics import YOLO
 from jinja2 import Template
 from fastapi.staticfiles import StaticFiles
+from models.common import DetectMultiBackend
+from utils.torch_utils import select_device
+from utils.general import non_max_suppression, scale_coords
 
+# Initialize FastAPI
 app = FastAPI()
 
 # Mount static folder for serving CSS & JS
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Load YOLOv8 model (CPU only)
-model_path = "model/yolov8n.pt"
-model = YOLO(model_path)
-model.to("cpu")
+# Load YOLOv5 model (CPU mode)
+model_path = "best.pt"
+device = select_device("cpu")
+model = DetectMultiBackend(model_path, device=device, dnn=False)
 
 # Upload folder
 UPLOAD_DIR = "uploads"
@@ -39,19 +44,26 @@ async def predict(file: UploadFile = File(...)):
 
     # Read image
     image = cv2.imread(file_path)
+    img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    img = torch.from_numpy(img).float().permute(2, 0, 1).unsqueeze(0) / 255.0  # Normalize
 
-    # Run YOLOv8 inference
-    results = model(image)
+    # Run YOLOv5 inference
+    pred = model(img)
+    detections = non_max_suppression(pred, conf_thres=0.5, iou_thres=0.5)
 
-    detections = []
-    for result in results:
-        for box in result.boxes:
-            detections.append({
-                "class": result.names[int(box.cls)],
-                "confidence": float(box.conf)
-            })
+    # Extract detection results
+    results = []
+    for det in detections:
+        if len(det):
+            det[:, :4] = scale_coords(img.shape[2:], det[:, :4], image.shape).round()
+            for *xyxy, conf, cls in det:
+                results.append({
+                    "class": model.names[int(cls)],
+                    "confidence": float(conf),
+                    "bbox": [int(coord) for coord in xyxy]
+                })
 
-    return JSONResponse(content={"detections": detections, "file_path": file_path})
+    return JSONResponse(content={"detections": results, "file_path": file_path})
 
 if __name__ == "__main__":
     import uvicorn
